@@ -1,0 +1,97 @@
+1. Address space and memory manager
+We first implement memory manager in memorymanager.cc and memorymanager.h following the suggested interface in the project problem statements. In implementation, we use lock to put BitMap related operations(track allocated and free physical page number) in critical sections. We create and initialize a memorymanager in the progtest.cc. 
+
+The we modify the addrspace.cc to allow multiple processes to be resident in machine memory at the same time. We change it so that we only allocate free physical page got from memory manager to a virtual page. If there is a failure in finding the free physical page, address space initialization will deallocate all previous found physical pages and return 0(error). 
+We then use a method WriteMemory() to write data from segment data to physical address. WriteMemory() divide the segment into three parts and write memory accordingly to handle the situations when the very beginning of virtual address doesn't fall on page boundary. If the beginning virtual address falls on boundary, it will write integer number of pages and write the rest, if any(smaller than a page), separately. If the beginning virtual address doesn't fall on boundary, it will compare the whole data size to PageSize and decide whether to write part of the rest physical page or fills in the rest page and write the rest data following the method when virtual address fall on boundary. 
+For each virtual address, a TestEntry() will run to check if there is alignment or virtual page too large errors. When the process is being destroyed, Clearmap() will call memory manager to free allocated pages. Clearmap() is explicitly called in system call exit() in later part. 
+Also, we use Initialize() so that code won't fail in constructor. 
+
+Tests such as array.c needs to run with the implementation of additional functions like system calls. Therefore, test results will be illustrated in later parts.
+
+﻿2. Exec and Exit system call
+a. Exec
+Before we implementing the Exec system call, we need a data structure for the kernel to keep track of the active processes. To do this, we created a table class (Table.h and Table.hh in userprog folder) to keep track of the process indexed by integers in the range starting from 0 to size-1. The table class is able to 1) allocate a table slot for a proces, 2) retrieve the object from table slot at given index, 3) free the table slot at given index. For this project, we created 1000 table slots for the processes.
+At the beginning of Exec system call, we have to know where the user program locates. The program path is the first argument passed in the Exec system call. To pass the file path string from user to kernel, we read the string pointer from Register 4, which stores the string pointer of the first argument. However, what passed in is the user’s virtual address. Thus, we called UserToKernelByString to convert it to kernel address. Then, we are able to open the user program in Exec system call.
+Next, we created a new address space for the user program by invoking Initialize function in AddrSpace class ( addrspace.h and addrspace.cc in userprog folder). After initializing the address space, we create a new process(thread), assigned it the new address space, and allocate it a new pid. In order for the user to get the pid back as Exec returns, we wrote it back to the Register 2. As for the pid, we also created a new class Pcb (Pcb.h and Pcb.cc in userprog folder) to keep track of the realted informatioin of the processes (only pid related in part 2). 
+Finally, we called ProcessStart function to initialize the registers and run on the machine. Before returning, we called PCincrease function to increase the program counter. What PCincrease basically does is to stroes the value of NextPCReg into PCReg. 
+
+b. Exit
+As for Exit system call, it simply invoked realexit fucntion. What realexit basically does is to get the pid, and then deallocate the table slot in process table. Also, it involke Clearmap function in the AddrSpace to delete the address spaced allocated for the current thread.   
+
+c. Testing
+The following is a summary of how to run test programs for the given possible cases:
+1). Bad string address:  run ./nachos -rs 29 -x ../test/badStrAddr
+To test this case, we created a correct file path but pass a wrong address of the file path to Exec system call. If we run this test program, we should see that “Unable to open file” prompted on the terminal, and this is what we expected. 
+2). Not end in a null character: run ./nachos -rs 29 -x ../test/notEndInNull
+To test this case, we created a correct file path but changed the last character in the path string before passing into Exec system call. If we run this test program, we should see that “Unable to open file ../test/exittestw” prompted on the terminal, and this is what we expected. 
+3). Filename not exist: run ./nachos -rs 29 -x ../test/fileNotExist
+To test this case, we created an incorrect file path and passed it into Exec system call. If we run this test program, we should see that “Unable to open file ../test/foo” prompted on the terminal, and this is what we expected. 
+4). Boundaries of AddrSpace: run ./nachos -rs 29 -x ../test/sizeTest
+To test this case, we allocated a large uninitialized static array, which runs out of the physical memory( for 32 physical pages). If we run this test program, we should see that nachos abort and this is what we expected. 
+5). Load programs one after the other: run ./nachos -rs 29 -x ../test/reuseTest
+To test this case, we invoked Exec twice in the first process (reuseTest.c), and this uses all of the physical memory (for 32 physical pages). In the reuseTest0.c, we invoke Exec for reuseTest1.c. This program will run after the first process yield and should be able to allocate address space only if the first process delete its address space successfull. As we ran this test program, we could see that it works correctly.
+
+3.extra credit for Exec()
+We first change the system call handler SysExec().We read parameters (argc and argv) from Register 5 and 6 and store them in the kernel memory. We assume that the string is less than 
+30 bytes and there will be less than 10 strings. Then we pass argc and argv to address space funtion to initialize address space. In the address space we first increase the size of 
+the space by 310 bytes.(30*10 for 10 strings and 10 for the head address). Then we calculate the virtul address to start storing these parameters (top-userstack-310). And finally 
+when we initialize the registers we write the addresses back to the Register 5 and 6.
+Test:
+We use exectestex.c to run Exec("../test/exresult", 3, s, 0) and s contains "a1","b2" and "c3". In the exresult.c we compare the original strings to the parameters and we increase the value of flag k every time when there is a 
+match. As result k=3.
+
+
+4. For problem 4:  
+(1)First we implement SynchConsole class in SynchConsole.cc and SynchConsole.h just like SynchDisk class.This class provides the abstraction of synchronous access to the console. In this class we use 2 locks and 2 semaphores to do it. Locks are used for blocking other threads require to read or write th console. Semaphores are used for making the thread required to read the console wait until an interrupt happens to signal it that the console is ready to be read or make it wait until a signal indicates that writing is done. Note that I use call back functions in this class.
+(2)In exception.cc, I first implement 2 functions UserToKernelByNum, KernelToUserByNum to transfer the address read from register to a char buffer and read from or write to the buffer. Then 
+   a). In Read system call, I read the value of registers 4,5 and 6. Create a temporary buffer. Use synchconsole to access the console safely and get char from console(keyboard) to temporary buffer and then transfer the contents in the buffer to user. If the arguments to Read and Write are invalid (e.g., invalid buffer address), have the system calls return -1 as an error. 
+   b). In Write system call, I read the value of registers 4,5 and 6. Create a temporary buffer.Get the contents from the user, transfer them and store them in the temporary buffer. Then put the char in the temporary buffer to console (display). If the arguments to Read and Write are invalid (e.g., invalid buffer address), have the system calls return -1 as an error. 
+(3)We test our code using the program echo.c. And we also use ./nachos -c to test. At last we use snake.c to test our Write system call. It proved that all work fine.
+
+5. Other user program exceptions
+To implement other user program exceptions, we only need to read the value of Register 2, determine the type of exception, and then call the particular exception handler. 
+For the testing, run ./nachos -rs 29 -x ../test/illeginstrtest for illegal instruction exception. We called invoke an illegal instruction in the user program. As we ran this program, “Illegal instruction exception: unimplemented or reserved instruction” prompted, and this is what we expected. For bad address exception, run ./nachos -rs 29 -x ../test/adderrtest. As we ran the test program, we should see "Address error exception: unaligned reference or beyond end of address space", and this is what we expected. 
+
+
+6. For problem 6:  
+(1)First, I use the id of the process passed into Join system call to track the data structure we implemented in Problem 2 (i.e Pcb). Then I check if it is a valid id and if the process is joinable(These parameters are stored in the data structure Pcb of each process). If something is wrong, write back a "-65535" to register 2 to indicate th error.
+(2)I use 3 semaphores to accomplish Join system call. The first two semaphore for block and semaphore for exit are just like the ones in thread join implementation, i.e for blocking parent until child is done and to block the child from exit until parent call child's join. The third semaphore is used to make sure that the parameter passed in Exit system call have already been passed into Join system call through Pcb.
+(3)We write a test program called jointest.c and jointest2.c to test it. In jointest.c we exec the jointest2.c and then call join system call of jointest2. In jointest2.c we loop for 10000 times and exit with parameter 123. In jointest we exit with parameter 123+1. For the result, we see that jointest2 exited before jointest and the parameters in exit is correct. It proved that Join system call works fine.
+   We also write jointest3.c and joinee.c to test the situation when the joinee is not joinabl. It turns out to be fine.
+   Note: You may use ./nachos -d h -x ../test/testname to see the parameters are right.
+
+7.pipeline.
+We use the fourth parameter to indicate a pipeline. 0 and 1 for Join system Call(). 2 for the head of a pipeline which reads from console and writes to its pipe. 3 for the middle of a pipeline
+which reads and writes pipes. 4 for the end of a pipeline which reads from pipes and writes to console. If we want to have a pipeline we Eexc() these pipes in order, like Exec("../test/pipe1", 0, 0, 2);
+Exec("../test/pipe2", 0, 0, 3); Exec("../test/pipe3", 0, 0, 4).
+
+Now each process have a boundedbuffer for pipes. A process will call Read() to read from what it has been defined to read (console or another process's boundedbuffer). And process will call 
+Write() to write to its own boundedbuffer.
+
+First we change Exec(), if the forth parameter is 2. We intialize a table in the parent's Pcb to store the pid of the pipe and put the pid of the child (head of pipe) to it. If the forth parameter is 3, we 
+first use the table in parent pcb to get the pid of the pipe ahead of this child and store the pid into child's Pcb (lastpipeId) and put the pid of the child (middle of pipe) to the table. If 
+the forth parameter is 4, we fisrt get the lastpipeId and then delete the table.
+
+Then we change the Read and Write system call handler. As the forth parameter is stored in joinable in pcb, in SysRead()if joinable =0 ,1 ,2 the Read() stay the same and read from console. And if joinable =3,4 the 
+SysRead() will use the lastpipeId to locate the boundedbuffer of that process and read from it. In SysWrite() if joinable = 0,1,4, the Write will stay the same and write to the console. And if joinable =2,3 the 
+SysWrite() will use the lastpipeId to locate the boundedbuffer of that process and write to it.
+
+
+Test:
+We use pipetest.c to test. We first run Exec("../test/pipe1", 0, 0, 2); Exec("../test/pipe2", 0, 0, 3); Exec("../test/pipe3", 0, 0, 4) to build a pipeline. And each pipe call Read() and Write() once. Then if we 
+input like "abc" through keyboard and it will appear "abc" like echo.c do.
+
+Then we use pipetest1.c to test. This time we change the middle of the pipe. After it calls Read(), it will change the value of the results by adding 1 to the value and then calls Write(). When I input like 
+"afch" then we get "bgdi".
+
+8. Multithreaded user program
+We first add an instance thdnum to thread.cc and thread.h to define and track the thread number of a single process. 
+In exception.cc, we add the SysFork() and SysYield() and their handling. 
+For SysFork(), we read the function pointer address from the machine, create a new thread, allocate the process space to this thread, call ForkStart() to run the function in user program, yield current thread and increase PC counter. 
+In ForkStart(), we initiate the thread's space's registers using ForkInitRegisters() in addrspace.cc, write the PCReg with the function pointer address, and write the NextPCReg with function address+4, then call the machine to run. 
+In ForkInitRegisters(), it sets a number to current thread and allocate a defined size of 64 to each thread stack. In SaveState(), it saves the current thread's PCReg and StackReg to corresponding arrays of address space. For illustration purpose only, we limit both arrays to be of size 5, which means only 4 thread (5 plus main thread) are expected to Fork. 
+In RestoreState(), we add the part using machine to write PCReg and stackReg for the thread about to run. 
+In SysYield(), we call thread->Yield() and increase the PC counter. 
+
+Tests are done in forktest.c in test folder. The main thread Fork() two threads that are running fun() and fun2(). fun() writes "ping" and fun2() writes "pong". Since write is implemented in a way that it will check semaphore after every character printing(it will just yield), therefore, a certain amount of Yield is put in main() to let fun and fun2 print enough strings(5 pings & songs) for illustration before calling Exit(). 
+
